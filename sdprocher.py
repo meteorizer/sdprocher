@@ -9,6 +9,7 @@ sdprocher.py - 프로세스 실행 상태 검사기
     cat procs.csv | python sdprocher.py
     python sdprocher.py --format json <입력파일>
 """
+from __future__ import print_function
 
 import sys
 import os
@@ -330,9 +331,10 @@ def output_rich(results):
     console.print(table)
     running_cnt = sum(1 for r in results if r['running'])
     console.print(
-        f"  총 [bold]{len(results)}[/bold]건 점검 완료  "
-        f"실행 중 [bold green]{running_cnt}[/bold green]건 / "
-        f"미실행 [bold red]{len(results) - running_cnt}[/bold red]건"
+        "  총 [bold]{0}[/bold]건 점검 완료  "
+        "실행 중 [bold green]{1}[/bold green]건 / "
+        "미실행 [bold red]{2}[/bold red]건".format(
+            len(results), running_cnt, len(results) - running_cnt)
     )
     console.print()
 
@@ -355,7 +357,8 @@ def output_plain(results):
         print(fmt.format(*[str(c) for c in row]))
     print()
     running_cnt = sum(1 for r in results if r['running'])
-    print(f"총 {len(results)}건 점검 완료  실행 중 {running_cnt}건 / 미실행 {len(results) - running_cnt}건")
+    print("총 {0}건 점검 완료  실행 중 {1}건 / 미실행 {2}건".format(
+        len(results), running_cnt, len(results) - running_cnt))
     print()
 
 
@@ -409,7 +412,7 @@ def main():
             with open(args.input_file, 'r', encoding='utf-8') as fh:
                 content = fh.read()
         except OSError as e:
-            print(f"오류: 파일을 열 수 없습니다 — {e}", file=sys.stderr)
+            print("오류: 파일을 열 수 없습니다 - {0}".format(e), file=sys.stderr)
             sys.exit(1)
     elif not sys.stdin.isatty():
         content = sys.stdin.read()
@@ -426,7 +429,7 @@ def main():
     try:
         process_list = parse_json(content) if fmt == 'json' else parse_csv(content)
     except Exception as e:
-        print(f"오류: 입력 파싱 실패 ({fmt}) — {e}", file=sys.stderr)
+        print("오류: 입력 파싱 실패 ({0}) - {1}".format(fmt, e), file=sys.stderr)
         sys.exit(1)
 
     if not process_list:
