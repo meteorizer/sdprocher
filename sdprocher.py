@@ -389,6 +389,27 @@ def output_rich(results):
     console.print()
 
 
+def _terminal_width():
+    """현재 터미널 너비를 반환한다. 감지 불가 시 80을 기본값으로 사용."""
+    try:
+        return os.get_terminal_size().columns
+    except (AttributeError, ValueError, OSError):
+        # Python 2.7 또는 터미널이 없는 환경
+        try:
+            import struct, fcntl, termios
+            data = fcntl.ioctl(1, termios.TIOCGWINSZ, b'\x00' * 8)
+            return struct.unpack('HH', data[:4])[1] or 80
+        except Exception:
+            return 80
+
+
+def _truncate(text, width):
+    """text를 width 글자 이내로 자르고 초과 시 '...' 접미어를 붙인다."""
+    if len(text) <= width:
+        return text
+    return text[:max(width - 3, 0)] + '...'
+
+
 def output_plain(results):
     col_widths = [len(h) for h in _TABLE_HEADERS]
     rows = [_table_row(r) for r in results]
@@ -397,6 +418,14 @@ def output_plain(results):
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(_text_type(cell)))
 
+    # 구분자(컬럼 사이 '  ')를 포함한 앞 컬럼들의 총 너비
+    COL_SEP = 2
+    leading_width = sum(col_widths[:-1]) + COL_SEP * (len(col_widths) - 1) + COL_SEP
+    last_col_max = _terminal_width() - leading_width
+    # 최소 헤더 너비는 보장
+    last_col_max = max(last_col_max, len(_TABLE_HEADERS[-1]))
+    col_widths[-1] = min(col_widths[-1], last_col_max)
+
     fmt = '  '.join('{{:<{0}}}'.format(w) for w in col_widths)
     sep = '  '.join('-' * w for w in col_widths)
 
@@ -404,7 +433,9 @@ def output_plain(results):
     print(fmt.format(*_TABLE_HEADERS))
     print(sep)
     for row in rows:
-        print(fmt.format(*[_text_type(c) for c in row]))
+        cells = [_text_type(c) for c in row]
+        cells[-1] = _truncate(cells[-1], col_widths[-1])
+        print(fmt.format(*cells))
     print()
     running_cnt = sum(1 for r in results if r['running'])
     print("총 {0}건 점검 완료  실행 중 {1}건 / 미실행 {2}건".format(
