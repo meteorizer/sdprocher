@@ -6,10 +6,9 @@ sdprocher.py - 프로세스 실행 상태 검사기
 
 사용법:
     python sdprocher.py <입력파일.csv|json>
-    cat procs.csv | python sdprocher.py
     python sdprocher.py --format json <입력파일>
 """
-from __future__ import print_function
+from __future__ import print_function, unicode_literals
 
 import sys
 import os
@@ -17,22 +16,39 @@ import csv
 import json
 import argparse
 import datetime
-import io
 
-# Windows 콘솔에서 UTF-8 I/O를 위해 인코딩 재설정
+# ---------------------------------------------------------------------------
+# Python 2/3 호환 타입 정의
+# ---------------------------------------------------------------------------
+
+if sys.version_info[0] >= 3:
+    _string_types = (str,)
+    _text_type = str
+else:
+    _string_types = (str, unicode)   # noqa: F821
+    _text_type = unicode              # noqa: F821
+
+# ---------------------------------------------------------------------------
+# Windows 콘솔 UTF-8 출력 설정
+# ---------------------------------------------------------------------------
+
 if sys.platform == 'win32':
-    for _stream in (sys.stdin, sys.stdout, sys.stderr):
-        if hasattr(_stream, 'reconfigure'):
-            try:
-                _stream.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[union-attr]
-            except Exception:
-                pass
-    del _stream
+    if sys.version_info[0] >= 3:
+        for _stream in (sys.stdin, sys.stdout, sys.stderr):
+            if hasattr(_stream, 'reconfigure'):
+                try:
+                    _stream.reconfigure(encoding='utf-8', errors='replace')
+                except Exception:
+                    pass
+    else:
+        import codecs as _codecs
+        sys.stdout = _codecs.getwriter('utf-8')(sys.stdout)
+        sys.stderr = _codecs.getwriter('utf-8')(sys.stderr)
 
 try:
     import psutil
 except ImportError:
-    print("오류: psutil 패키지가 필요합니다. 설치: uv add psutil", file=sys.stderr)
+    print("오류: psutil 패키지가 필요합니다. 설치: pip install psutil", file=sys.stderr)
     sys.exit(1)
 
 try:
@@ -49,24 +65,40 @@ except ImportError:
 # 입력 파싱
 # ---------------------------------------------------------------------------
 
-def detect_format(content):
-    """내용을 보고 JSON / CSV 자동 감지"""
-    stripped = content.strip()
-    if stripped.startswith(('[', '{')):
+def detect_format(filepath):
+    """파일 확장자로 JSON / CSV 감지. 판별 불가 시 csv 반환"""
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == '.json':
         return 'json'
     return 'csv'
 
 
-def parse_json(content):
-    data = json.loads(content)
+def parse_json(fh):
+    data = json.loads(fh.read().decode('utf-8'))
     if isinstance(data, dict):
         data = [data]
     return data
 
 
-def parse_csv(content):
-    reader = csv.DictReader(io.StringIO(content))
-    return list(reader)
+def parse_csv(fh):
+    raw = fh.read().decode('utf-8')
+    if sys.version_info[0] >= 3:
+        import io as _io
+        reader = csv.DictReader(_io.StringIO(raw))
+        return list(reader)
+    else:
+        # Python 2.7: csv 모듈은 bytes 전용이므로 utf-8로 재인코딩 후 파싱하고
+        # 각 키/값을 다시 unicode로 변환한다.
+        import io as _io
+        lines = raw.encode('utf-8').splitlines(True)
+        reader = csv.DictReader(lines)
+        result = []
+        for row in reader:
+            result.append({
+                k.decode('utf-8'): v.decode('utf-8')
+                for k, v in row.items()
+            })
+        return result
 
 
 # 허용하는 필드명 변형들
@@ -91,7 +123,7 @@ def normalize_record(record):
     out = {}
     for k, v in record.items():
         key = _FIELD_ALIASES.get(k.strip().lower(), k.strip().lower())
-        out[key] = v.strip() if isinstance(v, str) else (v or '')
+        out[key] = v.strip() if isinstance(v, _string_types) else (v or '')
     return out
 
 
@@ -100,7 +132,13 @@ def normalize_record(record):
 # ---------------------------------------------------------------------------
 
 def _safe_str(s):
-    """서로게이트 등 인코딩 불가 문자를 '?'로 대체하여 안전한 문자열 반환"""
+    """인코딩 불가 문자를 '?'로 대체하여 안전한 문자열 반환"""
+    if sys.version_info[0] < 3:
+        if s is None:
+            return u''
+        if isinstance(s, bytes):
+            return s.decode('utf-8', 'replace')
+        return s  # 이미 unicode
     if not isinstance(s, str):
         return str(s) if s is not None else ''
     return s.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
@@ -127,7 +165,6 @@ def _is_excluded(cmdline_parts):
     if not cmdline_parts:
         return False
     exe_name = os.path.basename(cmdline_parts[0]).lower()
-    # 확장자(.exe 등) 제거
     exe_name = os.path.splitext(exe_name)[0]
     return exe_name in _EXCLUDED_EXECUTABLES
 
@@ -149,11 +186,39 @@ def find_procs_by_cmd(cmd_pattern):
     return matches
 
 
+def _find_parent(procs):
+    """매칭된 프로세스 목록에서 어미 프로세스를 반환한다.
+
+    ppid가 매칭된 PID 집합에 없는 프로세스들을 루트 후보로 수집한다.
+    루트 후보가 하나면 그것이 어미이고, 여럿이면 PID가 가장 낮은 것을 반환한다.
+    """
+    if len(procs) == 1:
+        return procs[0]
+
+    pid_set = set(p.pid for p in procs)
+
+    roots = []
+    for p in procs:
+        try:
+            ppid = p.ppid()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if ppid not in pid_set:
+            roots.append(p)
+
+    if len(roots) == 1:
+        return roots[0]
+
+    # 루트가 여럿(독립 프로세스)이거나 판별 불가 시 PID 최솟값 반환
+    candidates = roots if roots else procs
+    return min(candidates, key=lambda p: p.pid)
+
+
 def _fmt_ts(ts):
     """Unix timestamp → 'YYYY-MM-DD HH:MM:SS' 문자열"""
     try:
         return datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-    except Exception:
+    except (ValueError, OSError, OverflowError):
         return ''
 
 
@@ -161,28 +226,27 @@ def get_proc_detail(proc):
     """psutil.Process 객체에서 필요한 정보 추출"""
     try:
         create_time = _fmt_ts(proc.create_time())
-    except Exception:
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         create_time = ''
 
-    # 마지막 엑세스 시각: 실행 파일(exe)의 atime 사용
     access_time = ''
     try:
         exe = proc.exe()
         if exe and os.path.exists(exe):
             access_time = _fmt_ts(os.path.getatime(exe))
-    except Exception:
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
         pass
 
     try:
         status = proc.status()
         is_zombie = (status == psutil.STATUS_ZOMBIE)
-    except Exception:
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         status = 'unknown'
         is_zombie = False
 
     try:
         cmdline = _safe_str(' '.join(proc.cmdline()))
-    except Exception:
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         cmdline = ''
 
     return {
@@ -211,7 +275,6 @@ def check_processes(process_list):
         path         = item.get('path', '')
 
         if not cmd:
-            # cmd 없으면 검사 불가 — 미실행으로 기록
             results.append({
                 'run_type':     run_type,
                 'process_name': process_name,
@@ -242,21 +305,20 @@ def check_processes(process_list):
                 'count':        0,
             })
         else:
-            count = len(matched)
-            for proc in matched:
-                detail = get_proc_detail(proc)
-                results.append({
-                    'run_type':     run_type,
-                    'process_name': process_name,
-                    'running':      not detail['is_zombie'],
-                    'zombie':       detail['is_zombie'],
-                    'create_time':  detail['create_time'],
-                    'access_time':  detail['access_time'],
-                    'cmd':          detail['cmdline'] or cmd,
-                    'path':         path,
-                    'pid':          str(detail['pid']),
-                    'count':        count,
-                })
+            parent = _find_parent(matched)
+            detail = get_proc_detail(parent)
+            results.append({
+                'run_type':     run_type,
+                'process_name': process_name,
+                'running':      not detail['is_zombie'],
+                'zombie':       detail['is_zombie'],
+                'create_time':  detail['create_time'],
+                'access_time':  detail['access_time'],
+                'cmd':          detail['cmdline'] or cmd,
+                'path':         path,
+                'pid':          str(detail['pid']),
+                'count':        len(matched) - 1,
+            })
 
     return results
 
@@ -266,10 +328,10 @@ def check_processes(process_list):
 # ---------------------------------------------------------------------------
 
 # 테이블 출력용 헤더 (한글)
-_TABLE_HEADERS = ['프로세스 타입', '프로세스명', '프로세스 상태', '좀비', '갯수', '실행 시각', '엑세스 시각', 'cmd']
+_TABLE_HEADERS = ['프로세스 타입', '프로세스명', '프로세스 상태', '좀비', '자식수', '실행 시각', '액세스 시각', 'cmd']
 
 # CSV / JSON 출력용 영문 키
-_OUTPUT_KEYS = ['run_type', 'process_name', 'running', 'zombie', 'count', 'start_time', 'access_time', 'cmd']
+_OUTPUT_KEYS = ['run_type', 'process_name', 'running', 'zombie', 'child_count', 'start_time', 'access_time', 'cmd']
 
 
 def _to_output_record(r):
@@ -279,7 +341,7 @@ def _to_output_record(r):
         'process_name': r['process_name'],
         'running':      'Y' if r['running'] else 'N',
         'zombie':       'Y' if r['zombie'] else 'N',
-        'count':        r['count'],
+        'child_count':  r['count'],
         'start_time':   r['create_time'],
         'access_time':  r['access_time'],
         'cmd':          r['cmd'],
@@ -315,7 +377,7 @@ def output_rich(results):
     for r in results:
         running_text = Text("Y", style="bold green") if r['running'] else Text("N", style="bold red")
         zombie_text  = Text("Y", style="bold yellow") if r['zombie'] else Text("N")
-        count_text   = Text(str(r['count']), style="bold yellow") if r['count'] > 1 else Text(str(r['count']))
+        count_text   = Text(str(r['count']), style="bold yellow") if r['count'] >= 1 else Text(str(r['count']))
         table.add_row(
             r['run_type'],
             r['process_name'],
@@ -345,16 +407,16 @@ def output_plain(results):
 
     for row in rows:
         for i, cell in enumerate(row):
-            col_widths[i] = max(col_widths[i], len(str(cell)))
+            col_widths[i] = max(col_widths[i], len(_text_type(cell)))
 
-    fmt = '  '.join('{{:<{}}}'.format(w) for w in col_widths)
+    fmt = '  '.join('{{:<{0}}}'.format(w) for w in col_widths)
     sep = '  '.join('-' * w for w in col_widths)
 
     print()
     print(fmt.format(*_TABLE_HEADERS))
     print(sep)
     for row in rows:
-        print(fmt.format(*[str(c) for c in row]))
+        print(fmt.format(*[_text_type(c) for c in row]))
     print()
     running_cnt = sum(1 for r in results if r['running'])
     print("총 {0}건 점검 완료  실행 중 {1}건 / 미실행 {2}건".format(
@@ -405,23 +467,14 @@ def main():
     )
     args = parser.parse_args()
 
-    # 입력 읽기
+    fmt = args.format or detect_format(args.input_file)
     try:
         with open(args.input_file, 'rb') as fh:
-            content = fh.read().decode('utf-8')
+            process_list = parse_json(fh) if fmt == 'json' else parse_csv(fh)
     except IOError as e:
         print("오류: 파일을 열 수 없습니다 - {0}".format(e), file=sys.stderr)
         sys.exit(1)
-
-    if not content.strip():
-        print("오류: 입력이 비어 있습니다.", file=sys.stderr)
-        sys.exit(1)
-
-    # 형식 감지 및 파싱
-    fmt = args.format or detect_format(content)
-    try:
-        process_list = parse_json(content) if fmt == 'json' else parse_csv(content)
-    except Exception as e:
+    except (ValueError, KeyError) as e:
         print("오류: 입력 파싱 실패 ({0}) - {1}".format(fmt, e), file=sys.stderr)
         sys.exit(1)
 
