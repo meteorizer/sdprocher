@@ -296,6 +296,10 @@ def check_processes(process_list):
         else:
             parent = _find_parent(matched)
             detail = get_proc_detail(parent)
+            try:
+                child_count = len(parent.children())
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                child_count = 0
             results.append({
                 'run_type':     run_type,
                 'process_name': process_name,
@@ -305,7 +309,7 @@ def check_processes(process_list):
                 'cmd':          detail['cmdline'] or cmd,
                 'path':         path,
                 'pid':          str(detail['pid']),
-                'count':        len(matched) - 1,
+                'count':        child_count,
             })
 
     return results
