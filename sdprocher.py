@@ -386,13 +386,12 @@ def main():
             '예시:\n'
             '  python sdprocher.py procs.csv\n'
             '  python sdprocher.py procs.json\n'
-            '  cat procs.csv | python sdprocher.py\n'
             '  python sdprocher.py --format json procs.txt\n'
             '  python sdprocher.py -o csv procs.csv\n'
             '  python sdprocher.py -o json procs.csv\n'
         ),
     )
-    parser.add_argument('input_file', nargs='?', help='입력 파일 경로 (CSV 또는 JSON)')
+    parser.add_argument('input_file', help='입력 파일 경로 (CSV 또는 JSON)')
     parser.add_argument(
         '--format', '-f',
         choices=['csv', 'json'],
@@ -407,17 +406,11 @@ def main():
     args = parser.parse_args()
 
     # 입력 읽기
-    if args.input_file:
-        try:
-            with open(args.input_file, 'r', encoding='utf-8') as fh:
-                content = fh.read()
-        except OSError as e:
-            print("오류: 파일을 열 수 없습니다 - {0}".format(e), file=sys.stderr)
-            sys.exit(1)
-    elif not sys.stdin.isatty():
-        content = sys.stdin.read()
-    else:
-        parser.print_help()
+    try:
+        with open(args.input_file, 'rb') as fh:
+            content = fh.read().decode('utf-8')
+    except IOError as e:
+        print("오류: 파일을 열 수 없습니다 - {0}".format(e), file=sys.stderr)
         sys.exit(1)
 
     if not content.strip():
