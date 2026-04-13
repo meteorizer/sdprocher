@@ -229,14 +229,6 @@ def get_proc_detail(proc):
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         create_time = ''
 
-    access_time = ''
-    try:
-        exe = proc.exe()
-        if exe and os.path.exists(exe):
-            access_time = _fmt_ts(os.path.getatime(exe))
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
-        pass
-
     try:
         status = proc.status()
         is_zombie = (status == psutil.STATUS_ZOMBIE)
@@ -254,7 +246,6 @@ def get_proc_detail(proc):
         'status':      status,
         'is_zombie':   is_zombie,
         'create_time': create_time,
-        'access_time': access_time,
         'cmdline':     cmdline,
     }
 
@@ -281,7 +272,6 @@ def check_processes(process_list):
                 'running':      False,
                 'zombie':       False,
                 'create_time':  '',
-                'access_time':  '',
                 'cmd':          cmd,
                 'path':         path,
                 'pid':          '',
@@ -298,7 +288,6 @@ def check_processes(process_list):
                 'running':      False,
                 'zombie':       False,
                 'create_time':  '',
-                'access_time':  '',
                 'cmd':          cmd,
                 'path':         path,
                 'pid':          '',
@@ -313,7 +302,6 @@ def check_processes(process_list):
                 'running':      not detail['is_zombie'],
                 'zombie':       detail['is_zombie'],
                 'create_time':  detail['create_time'],
-                'access_time':  detail['access_time'],
                 'cmd':          detail['cmdline'] or cmd,
                 'path':         path,
                 'pid':          str(detail['pid']),
@@ -328,10 +316,10 @@ def check_processes(process_list):
 # ---------------------------------------------------------------------------
 
 # 테이블 출력용 헤더 (한글)
-_TABLE_HEADERS = ['프로세스 타입', '프로세스명', '프로세스 상태', '좀비', '자식수', '실행 시각', '액세스 시각', 'cmd']
+_TABLE_HEADERS = ['프로세스 타입', '프로세스명', '프로세스 상태', '좀비', '자식수', '실행 시각', 'cmd']
 
 # CSV / JSON 출력용 영문 키
-_OUTPUT_KEYS = ['run_type', 'process_name', 'running', 'zombie', 'child_count', 'start_time', 'access_time', 'cmd']
+_OUTPUT_KEYS = ['run_type', 'process_name', 'running', 'zombie', 'child_count', 'start_time', 'cmd']
 
 
 def _to_output_record(r):
@@ -343,7 +331,6 @@ def _to_output_record(r):
         'zombie':       'Y' if r['zombie'] else 'N',
         'child_count':  r['count'],
         'start_time':   r['create_time'],
-        'access_time':  r['access_time'],
         'cmd':          r['cmd'],
     }
 
@@ -356,7 +343,6 @@ def _table_row(r):
         'Y' if r['zombie'] else 'N',
         str(r['count']),
         r['create_time'],
-        r['access_time'],
         r['cmd'],
     ]
 
@@ -371,8 +357,7 @@ def output_rich(results):
     table.add_column(_TABLE_HEADERS[3], justify="center", no_wrap=True)
     table.add_column(_TABLE_HEADERS[4], justify="right", no_wrap=True)
     table.add_column(_TABLE_HEADERS[5], no_wrap=True)
-    table.add_column(_TABLE_HEADERS[6], no_wrap=True)
-    table.add_column(_TABLE_HEADERS[7])
+    table.add_column(_TABLE_HEADERS[6])
 
     for r in results:
         running_text = Text("Y", style="bold green") if r['running'] else Text("N", style="bold red")
@@ -385,7 +370,6 @@ def output_rich(results):
             zombie_text,
             count_text,
             r['create_time'],
-            r['access_time'],
             r['cmd'],
         )
 
